@@ -6,6 +6,10 @@
 #include <string.h>
 #include "Secrets.h"
 
+
+#define WIFI_ON 1
+#define DEBUG 0
+
 // These are the interrupt and control pins
 #define ADAFRUIT_CC3000_IRQ   3  // MUST be an interrupt pin!
 // These can be any two pins
@@ -33,7 +37,8 @@ const unsigned long kHOUR = 60 * kMIN;
 const unsigned long watertime = 15 * kSECOND; // how long to water in miliseconds
 const unsigned long waittime =  2 * kSECOND; // how long to wait between watering
 const unsigned long StreamInterval = 300 * 1000.0; // stream intervals in seconds
-const unsigned int BasilThreshold = 500;
+const unsigned int BasilThreshold = 750;
+const unsigned int nbRunningAvg = 100; // number of point to compute the avg over
 
 /**************************************************************************/
 // @brief  Debug print function
@@ -48,7 +53,6 @@ void debug_print(char const*fmt, ... ) {
   va_end (args);
   Serial.println(buf);
 }
-#define DEBUG 0
 #if DEBUG
   #define INTERVAL_TIME 1000
   #define debug(format, ...) \
@@ -70,8 +74,6 @@ void setup() {
     delay(300);
   }
   Serial.println("Setup complete.");
-  debug("Watertime set to %d", watertime);
-  sendData("", "0");
 }
 
 // State Machine
@@ -79,24 +81,29 @@ unsigned long long lastStart = 0;
 unsigned long long previousMillis = 0;
 int watering = 0;
 
+int avgMoistValue = BasilThreshold;
+
 void loop() {
   unsigned long long currentMillis = millis();
-  int moistValue = analogRead(moistureSensorPin);
+  avgMoistValue -= avgMoistValue / nbRunningAvg;
+  avgMoistValue += analogRead(moistureSensorPin) / nbRunningAvg;
+  debug("Loop Begin avg moisture:%i", avgMoistValue);
 
-  if(moistValue < BasilThreshold && !watering) {
-    debug("Watering for %i sec, moisture %i", watertime/kSECOND, moistValue);
+  if(avgMoistValue < BasilThreshold && !watering) {
+    debug("Watering for %i sec", watertime/kSECOND);
     lastStart = currentMillis;
     startWater();
   } else if (currentMillis > lastStart + watertime && watering) {
-    debug("Stop watering moisture %i", moistValue);
+    debug("Stop watering");
     stopWater();
-  } else if(currentMillis - previousMillis > StreamInterval || previousMillis == 0) {
+  } else if(!watering &&
+            (currentMillis - previousMillis > StreamInterval || previousMillis == 0)) {
     previousMillis = currentMillis;
-    debug("Reading moisture:%i", moistValue);
     debug("Start stream.");
-    sendData(String(moistValue, DEC), "");
+    sendData(String(avgMoistValue, DEC), "");
     debug("End stream.");
   }
+
   delay(INTERVAL_TIME);        // delay in between reads for stability
 }
 
@@ -123,6 +130,7 @@ void stopWater() {
 uint32_t ip = 0;
 Adafruit_CC3000_Client www;
 void sendData(String field1, String field2) {
+#if WIFI_ON
   String fields_values = "";
   if (field1.length() > 0) {
     fields_values += "field1="+field1;
@@ -181,12 +189,14 @@ void sendData(String field1, String field2) {
   }
   www.close();
   debug("-------------------------------------");
+#endif
 }
 
 /**************************************************************************/
 // @brief  Network Routines
 /**************************************************************************/
 bool setupWifi(void) {
+#if WIFI_ON
   debug("Initialising the CC3000 ...");
   if (!cc3000.begin()) {
     debug("Unable to initialise the CC3000! Check your wiring?");
@@ -213,13 +223,14 @@ bool setupWifi(void) {
   while (!displayConnectionDetails()) {
     delay(1000);
   }
+#endif
   return true;
 }
 
 bool displayConnectionDetails(void)
 {
   uint32_t ipAddress, netmask, gateway, dhcpserv, dnsserv;
-
+#if WIFI_ON
   if(!cc3000.getIPAddress(&ipAddress, &netmask, &gateway, &dhcpserv, &dnsserv))
   {
     debug("Unable to retrieve the IP Address!");
@@ -235,12 +246,15 @@ bool displayConnectionDetails(void)
     Serial.println();
     return true;
   }
+#else
+  return true;
+#endif
 }
 
 uint16_t checkFirmwareVersion(void) {
   uint8_t  major, minor;
   uint16_t version = 0;
-
+#if WIFI_ON
 #ifndef CC3000_TINY_DRIVER
   if(!cc3000.getFirmwareVersion(&major, &minor)) {
     debug("Unable to retrieve the firmware version!\r\n");
@@ -249,10 +263,12 @@ uint16_t checkFirmwareVersion(void) {
     version = ((uint16_t)major << 8) | minor;
   }
 #endif
+#endif
   return version;
 }
 
 bool ping(uint32_t ip) {
+#if WIFI_ON
 #ifndef CC3000_TINY_DRIVER
   #if DEBUG
   Serial.print(F("Pinging ")); cc3000.printIPdotsRev(ip); Serial.print("...\n");
@@ -263,7 +279,7 @@ bool ping(uint32_t ip) {
     return true;
   else
     return false;
-#else
-  return false;
 #endif
+#endif
+  return false;
 }
