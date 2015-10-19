@@ -37,7 +37,7 @@ const unsigned long kHOUR = 60 * kMIN;
 const unsigned long watertime = 15 * kSECOND; // how long to water in miliseconds
 const unsigned long waittime =  2 * kSECOND; // how long to wait between watering
 const unsigned long StreamInterval = 300 * 1000.0; // stream intervals in seconds
-const unsigned int BasilThreshold = 750;
+const unsigned int BasilThreshold = 580;
 const unsigned int nbRunningAvg = 100; // number of point to compute the avg over
 
 /**************************************************************************/
@@ -65,6 +65,13 @@ void debug_print(char const*fmt, ... ) {
 /**************************************************************************/
 // @Main Routines
 /**************************************************************************/
+
+// State Machine
+unsigned long long lastStart = 0;
+unsigned long long previousMillis = 0;
+int watering = 0;
+int avgMoistValue;
+
 void setup() {
   // put your main code here, to run repeatedly:
   Serial.begin(9600);
@@ -74,33 +81,29 @@ void setup() {
     delay(300);
   }
   Serial.println("Setup complete.");
+  avgMoistValue = analogRead(moistureSensorPin);
 }
-
-// State Machine
-unsigned long long lastStart = 0;
-unsigned long long previousMillis = 0;
-int watering = 0;
-
-int avgMoistValue = BasilThreshold;
 
 void loop() {
   unsigned long long currentMillis = millis();
+  int moistValue = analogRead(moistureSensorPin);
   avgMoistValue -= avgMoistValue / nbRunningAvg;
-  avgMoistValue += analogRead(moistureSensorPin) / nbRunningAvg;
-  debug("Loop Begin avg moisture:%i", avgMoistValue);
+  avgMoistValue += moistValue / nbRunningAvg;
+  debug("Loop Begin current moisture:%i", moistValue);
+  debug("avg moisture:%i", avgMoistValue);
 
   if(avgMoistValue < BasilThreshold && !watering) {
     debug("Watering for %i sec", watertime/kSECOND);
     lastStart = currentMillis;
-    startWater();
+    startWater(moistValue);
   } else if (currentMillis > lastStart + watertime && watering) {
     debug("Stop watering");
-    stopWater();
+    stopWater(moistValue);
   } else if(!watering &&
             (currentMillis - previousMillis > StreamInterval || previousMillis == 0)) {
     previousMillis = currentMillis;
     debug("Start stream.");
-    sendData(String(avgMoistValue, DEC), "");
+    sendData(String(avgMoistValue, DEC), "0");
     debug("End stream.");
   }
 
@@ -110,16 +113,16 @@ void loop() {
 /**************************************************************************/
 // @brief  Watering Routines
 /**************************************************************************/
-void startWater() {
+void startWater(int moistValue) {
   watering = 1;
   digitalWrite(motorPin, HIGH);
-  sendData("", "1");
+  sendData(String(moistValue, DEC), "1");
 }
 
-void stopWater() {
+void stopWater(int moistValue) {
   watering = 0;
   digitalWrite(motorPin, LOW);
-  sendData("", "0");
+  sendData(String(moistValue, DEC), "0");
 }
 
 /**************************************************************************/
