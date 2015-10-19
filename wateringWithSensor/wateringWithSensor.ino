@@ -6,6 +6,7 @@
 #include <string.h>
 #include "Secrets.h"
 
+#define MAX(a,b) ((a) > (b) ? (a) : (b))
 
 #define WIFI_ON 1
 #define DEBUG 0
@@ -30,15 +31,17 @@ Adafruit_CC3000 cc3000 = Adafruit_CC3000(ADAFRUIT_CC3000_CS,
 /**************************************************************************/
 int motorPin = A0;
 int moistureSensorPin = A1;
+int moistureInputPIN = 8;
+int moistureOutputPIN = 9;
 
 const unsigned long kSECOND = 1000;
 const unsigned long kMIN = 60 * kSECOND;
 const unsigned long kHOUR = 60 * kMIN;
-const unsigned long watertime = 15 * kSECOND; // how long to water in miliseconds
-const unsigned long waittime =  2 * kSECOND; // how long to wait between watering
-const unsigned long StreamInterval = 300 * 1000.0; // stream intervals in seconds
+const unsigned long watertime = 25 * kSECOND; // how long to water in miliseconds
+const unsigned long restartWaterTime =  5 * kMIN; // how long to wait between watering
+const unsigned long StreamInterval = 30 * kMIN; // stream intervals in seconds
 const unsigned int BasilThreshold = 580;
-const unsigned int nbRunningAvg = 100; // number of point to compute the avg over
+const unsigned int nbRunningAvg = 50; // number of point to compute the avg over
 
 /**************************************************************************/
 // @brief  Debug print function
@@ -58,7 +61,7 @@ void debug_print(char const*fmt, ... ) {
   #define debug(format, ...) \
   debug_print(format, ## __VA_ARGS__)
 #else
-  #define INTERVAL_TIME 10*1000
+  #define INTERVAL_TIME 10*kMIN // every 10min
   #define debug(format, ...) do {} while (0)
 #endif
 
@@ -67,62 +70,102 @@ void debug_print(char const*fmt, ... ) {
 /**************************************************************************/
 
 // State Machine
-unsigned long long lastStart = 0;
-unsigned long long previousMillis = 0;
+unsigned long long waterStartTime = 0;
+unsigned long long lastDataSendTime = 0;
 int watering = 0;
-int avgMoistValue;
 
 void setup() {
   // put your main code here, to run repeatedly:
   Serial.begin(9600);
   Serial.println("Start.");
   pinMode(motorPin, OUTPUT);
+  pinMode(moistureInputPIN, OUTPUT);
+  pinMode(moistureOutputPIN, OUTPUT);
+  digitalWrite(moistureInputPIN, LOW);
+  digitalWrite(moistureOutputPIN, LOW);
   while(!setupWifi()) {
     delay(300);
   }
   Serial.println("Setup complete.");
-  avgMoistValue = analogRead(moistureSensorPin);
 }
 
 void loop() {
   unsigned long long currentMillis = millis();
-  int moistValue = analogRead(moistureSensorPin);
-  avgMoistValue -= avgMoistValue / nbRunningAvg;
-  avgMoistValue += moistValue / nbRunningAvg;
-  debug("Loop Begin current moisture:%i", moistValue);
-  debug("avg moisture:%i", avgMoistValue);
+  int avgMoistValue = RecomputeAverageMoisture();
+  debug("Loop Begin current avg moisture:%i", avgMoistValue);
 
   if(avgMoistValue < BasilThreshold && !watering) {
-    debug("Watering for %i sec", watertime/kSECOND);
-    lastStart = currentMillis;
-    startWater(moistValue);
-  } else if (currentMillis > lastStart + watertime && watering) {
+    debug("Watering for up to %i sec", watertime/kSECOND);
+    waterStartTime = currentMillis;
+    startWater();
+    return;
+  } else if (watering && avgMoistValue > BasilThreshold) {
     debug("Stop watering");
-    stopWater(moistValue);
-  } else if(!watering &&
-            (currentMillis - previousMillis > StreamInterval || previousMillis == 0)) {
-    previousMillis = currentMillis;
-    debug("Start stream.");
-    sendData(String(avgMoistValue, DEC), "0");
-    debug("End stream.");
+    stopWater();
+  } else if (watering && currentMillis > waterStartTime + watertime) {
+    debug("Stop watering");
+    stopWater();
+    delay(restartWaterTime); // just wait a bit since maybe it's still dry.
+    return;
   }
 
-  delay(INTERVAL_TIME);        // delay in between reads for stability
+  if(!watering &&
+        ((currentMillis - lastDataSendTime) > StreamInterval || lastDataSendTime == 0)) {
+    lastDataSendTime = currentMillis;
+    sendData(dataForMoisture(String(avgMoistValue, DEC)));
+  }
+
+  int interationTime = millis() - currentMillis;
+  debug("Loop End restart in:%i", interationTime);
+  delay(MAX(0, INTERVAL_TIME - interationTime)); // delay in between reads for stability
 }
 
 /**************************************************************************/
 // @brief  Watering Routines
 /**************************************************************************/
-void startWater(int moistValue) {
-  watering = 1;
-  digitalWrite(motorPin, HIGH);
-  sendData(String(moistValue, DEC), "1");
+
+int RecomputeAverageMoisture() {
+  int avgMoistValue = 0;
+  for (int i = 0; i < nbRunningAvg; ++i) {
+    digitalWrite(moistureInputPIN, HIGH);
+    delay(150);
+    int moistValue = analogRead(moistureSensorPin);
+    digitalWrite(moistureInputPIN, LOW);
+    avgMoistValue += moistValue;
+  }
+  avgMoistValue /= nbRunningAvg;
+  return avgMoistValue;
 }
 
-void stopWater(int moistValue) {
+void startWater() {
+  watering = 1;
+  sendData(dataForPumping(false));
+  digitalWrite(motorPin, HIGH);
+  sendData(dataForPumping(true));
+}
+
+void stopWater() {
   watering = 0;
+  // stop before sending data cuz it takes too long.
   digitalWrite(motorPin, LOW);
-  sendData(String(moistValue, DEC), "0");
+  sendData(dataForPumping(true));
+  sendData(dataForPumping(false));
+}
+
+String dataForMoisture(String moistValue) {
+  return (moistValue.length() > 0) ? "field1="+moistValue : "";
+}
+
+String dataForPumping(boolean isPumping) {
+  return isPumping ? "field2=1" : "field2=0";
+}
+
+String dataFromValues(String moistValue, boolean isPumping) {
+  String fields_values = dataForMoisture(moistValue);
+  if (fields_values.length() > 0) {
+    fields_values += "&";
+  }
+  return fields_values + dataForPumping(isPumping);
 }
 
 /**************************************************************************/
@@ -132,21 +175,13 @@ void stopWater(int moistValue) {
 #define WEBPAGE "/update"
 uint32_t ip = 0;
 Adafruit_CC3000_Client www;
-void sendData(String field1, String field2) {
+void sendData(String data) {
 #if WIFI_ON
-  String fields_values = "";
-  if (field1.length() > 0) {
-    fields_values += "field1="+field1;
-  }
-  if (field2.length() > 0) {
-    fields_values += fields_values.length() > 0 ? "&" : "";
-    fields_values += "field2="+field2;
-  }
-  debug("Sending to thingspeak:'%s'", fields_values.c_str());
+  debug("Sending to thingspeak:'%s'", data.c_str());
   // Try looking up the website's IP address
   while (ip == 0) {
     debug("Looking for website's ip");
-    if (! cc3000.getHostByName(WEBSITE, &ip)) {
+    if (!cc3000.getHostByName(WEBSITE, &ip)) {
       debug("Couldn't resolve!");
     }
     if (ip == 0) delay(500);
@@ -172,9 +207,9 @@ void sendData(String field1, String field2) {
   www.fastrprint("X-THINGSPEAKAPIKEY: "); www.fastrprint(THINKSPEAK_API_KEY); www.fastrprint("\n");
   www.fastrprint("Content-Type: application/x-www-form-urlencoded\n");
   www.fastrprint("Content-Length: ");
-  www.fastrprint(String(fields_values.length(), DEC).c_str());
+  www.fastrprint(String(data.length(), DEC).c_str());
   www.fastrprint("\n\n");
-  www.fastrprint(fields_values.c_str());
+  www.fastrprint(data.c_str());
   www.fastrprint(F("\r\n"));
   www.println();
   debug("Done.");
