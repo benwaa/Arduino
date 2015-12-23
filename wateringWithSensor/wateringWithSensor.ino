@@ -92,7 +92,7 @@ void setup() {
 }
 
 void loop() {
-  long startMillis = millis();
+  unsigned long long startMillis = millis();
   int avgMoistValue = RecomputeAverageMoisture();
   debug("Loop Begin current avg moisture:%i", avgMoistValue);
 
