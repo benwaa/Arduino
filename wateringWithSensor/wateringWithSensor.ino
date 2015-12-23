@@ -34,14 +34,16 @@ int moistureSensorPin = A1;
 int moistureInputPIN = 8;
 int moistureOutputPIN = 9;
 
+#define kMAXHUMIDITY 1023.0
+
 const unsigned long kSECOND = 1000;
 const unsigned long kMIN = 60 * kSECOND;
 const unsigned long kHOUR = 60 * kMIN;
-const unsigned long watertime = 25 * kSECOND; // how long to water in miliseconds
-const unsigned long restartWaterTime =  5 * kMIN; // how long to wait between watering
-const unsigned long StreamInterval = 30 * kMIN; // stream intervals in seconds
-const unsigned int BasilThreshold = 580;
-const unsigned int nbRunningAvg = 50; // number of point to compute the avg over
+const unsigned long kWaterTime = 25 * kSECOND; // how long to water in miliseconds
+const unsigned long kRestartWaterTime =  5 * kMIN; // how long to wait between watering
+const unsigned long kStreamInterval = 8 * kMIN; // stream intervals in milliseconds
+const unsigned int BasilThreshold = 50; // % of humidity
+const unsigned int nbRunningAvg = 5; // number of point to compute the avg over
 
 /**************************************************************************/
 // @brief  Debug print function
@@ -90,34 +92,30 @@ void setup() {
 }
 
 void loop() {
-  unsigned long long currentMillis = millis();
+  long startMillis = millis();
   int avgMoistValue = RecomputeAverageMoisture();
   debug("Loop Begin current avg moisture:%i", avgMoistValue);
 
   if(avgMoistValue < BasilThreshold && !watering) {
-    debug("Watering for up to %i sec", watertime/kSECOND);
-    waterStartTime = currentMillis;
+    debug("Watering for up to %i sec", kWaterTime/kSECOND);
+    waterStartTime = startMillis;
     startWater();
-    return;
   } else if (watering && avgMoistValue > BasilThreshold) {
     debug("Stop watering");
     stopWater();
-  } else if (watering && currentMillis > waterStartTime + watertime) {
-    debug("Stop watering");
+  } else if (watering && (startMillis > waterStartTime + kWaterTime)) {
+    debug("Forced Stop watering");
     stopWater();
-    delay(restartWaterTime); // just wait a bit since maybe it's still dry.
-    return;
+    delay(kRestartWaterTime); // just wait it's been watering for long.
+  } else { // Wait for next measure since nothing happened.
+    debug("Waiting for next mesure in:%d msec", INTERVAL_TIME);
+    delay(INTERVAL_TIME); // delay in between reads for stability
   }
 
-  if(!watering &&
-        ((currentMillis - lastDataSendTime) > StreamInterval || lastDataSendTime == 0)) {
-    lastDataSendTime = currentMillis;
+  if((startMillis - lastDataSendTime) > kStreamInterval ||
+        lastDataSendTime == 0) {
     sendData(dataForMoisture(String(avgMoistValue, DEC)));
   }
-
-  int interationTime = millis() - currentMillis;
-  debug("Loop End restart in:%i", interationTime);
-  delay(MAX(0, INTERVAL_TIME - interationTime)); // delay in between reads for stability
 }
 
 /**************************************************************************/
@@ -126,14 +124,26 @@ void loop() {
 
 int RecomputeAverageMoisture() {
   int avgMoistValue = 0;
+  int readings = 0;
   for (int i = 0; i < nbRunningAvg; ++i) {
+    // forward
     digitalWrite(moistureInputPIN, HIGH);
-    delay(150);
-    int moistValue = analogRead(moistureSensorPin);
+    delay(50);
+    int moistValue = analogRead(moistureSensorPin) * (100.0 / kMAXHUMIDITY);
     digitalWrite(moistureInputPIN, LOW);
     avgMoistValue += moistValue;
+    readings++;
+    delay(50);
+    // backward
+    // digitalWrite(moistureOutputPIN, HIGH);
+    // delay(150);
+    // int rawmoisture = kMAXHUMIDITY - analogRead(moistureSensorPin);
+    // moistValue = rawmoisture * (100.0 / kMAXHUMIDITY);
+    // digitalWrite(moistureOutputPIN, LOW);
+    // avgMoistValue += moistValue;
+    // readings++;
   }
-  avgMoistValue /= nbRunningAvg;
+  avgMoistValue /= readings;
   return avgMoistValue;
 }
 
@@ -228,6 +238,8 @@ void sendData(String data) {
   www.close();
   debug("-------------------------------------");
 #endif
+
+  lastDataSendTime = millis();
 }
 
 /**************************************************************************/
