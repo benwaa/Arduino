@@ -8,7 +8,7 @@
 
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
 
-#define WIFI_ON 1
+#define WIFI_ON 0
 #define DEBUG 0
 
 // These are the interrupt and control pins
@@ -42,7 +42,7 @@ const unsigned long kHOUR = 60 * kMIN;
 const unsigned long kWaterTime = 25 * kSECOND; // how long to water in miliseconds
 const unsigned long kRestartWaterTime =  5 * kMIN; // how long to wait between watering
 const unsigned long kStreamInterval = 8 * kMIN; // stream intervals in milliseconds
-const unsigned int BasilThreshold = 50; // % of humidity
+const unsigned int BasilThreshold = 48; // % of humidity
 const unsigned int nbRunningAvg = 5; // number of point to compute the avg over
 
 /**************************************************************************/
@@ -59,7 +59,7 @@ void debug_print(char const*fmt, ... ) {
   Serial.println(buf);
 }
 #if DEBUG
-  #define INTERVAL_TIME 1000
+  #define INTERVAL_TIME 10*kMIN
   #define debug(format, ...) \
   debug_print(format, ## __VA_ARGS__)
 #else
@@ -72,8 +72,8 @@ void debug_print(char const*fmt, ... ) {
 /**************************************************************************/
 
 // State Machine
-unsigned long long waterStartTime = 0;
-unsigned long long lastDataSendTime = 0;
+unsigned long waterStartTime = 0;
+unsigned long lastDataSendTime = 0;
 int watering = 0;
 
 void setup() {
@@ -92,7 +92,7 @@ void setup() {
 }
 
 void loop() {
-  unsigned long long startMillis = millis();
+  unsigned long startMillis = millis();
   int avgMoistValue = RecomputeAverageMoisture();
   debug("Loop Begin current avg moisture:%i", avgMoistValue);
 
@@ -103,8 +103,12 @@ void loop() {
   } else if (watering && avgMoistValue > BasilThreshold) {
     debug("Stop watering");
     stopWater();
-  } else if (watering && (startMillis > waterStartTime + kWaterTime)) {
-    debug("Forced Stop watering");
+  } else if (watering && (startMillis > (waterStartTime + kWaterTime))) {
+    Serial.print("startMillis: ");
+    Serial.println(startMillis);
+    Serial.print("waterStartTime + kWaterTime: ");
+    Serial.println(waterStartTime + kWaterTime);
+    debug("Forced Stop watering and wait for %ld", kRestartWaterTime);
     stopWater();
     delay(kRestartWaterTime); // just wait it's been watering for long.
   } else { // Wait for next measure since nothing happened.
